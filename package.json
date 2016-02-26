@@ -1,0 +1,28 @@
+{
+  "name": "webvr-libs",
+  "version": "1.0.0",
+  "description": "WebVR libraries",
+  "keywords": [
+    "webvr",
+    "web",
+    "virtual reality",
+    "vr",
+    "oculus",
+    "vive",
+    "webgl",
+    "three.js",
+    "threejs",
+    "javascript",
+    "js"
+  ],
+  "license": "MIT",
+  "repository": "mozvr/webvr-libs",
+  "devDependencies": {
+    "request-promise": "^2.0.1"
+  },
+  "scripts": {
+    "sync": "node ./scripts/update",
+    "update": "npm run sync",
+    "postinstall": "npm run sync"
+  }
+}
