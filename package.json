@@ -22,7 +22,6 @@
   },
   "scripts": {
     "sync": "node ./scripts/update",
-    "update": "npm run sync",
-    "postinstall": "npm run sync"
+    "update": "npm run sync"
   }
 }
