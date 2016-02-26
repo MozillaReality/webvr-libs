@@ -13,7 +13,7 @@ THREE.VRControls = function ( object, onError ) {
 
 		for ( var i = 0; i < devices.length; i ++ ) {
 
-			if ( devices[ i ] instanceof VRDisplay ||
+			if ( ('VRDisplay' in window && devices[ i ] instanceof VRDisplay) ||
 				 devices[ i ] instanceof PositionSensorVRDevice ) {
 
 				vrInputs.push( devices[ i ] );

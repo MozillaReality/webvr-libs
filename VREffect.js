@@ -22,7 +22,7 @@ THREE.VREffect = function ( renderer, onError ) {
 
 		for ( var i = 0; i < devices.length; i ++ ) {
 
-			if ( devices[ i ] instanceof VRDisplay ) {
+			if ( ( 'VRDisplay' in window && devices[ i ] instanceof VRDisplay ) ) {
 
 				vrHMD = devices[ i ];
 				deprecatedAPI = false;

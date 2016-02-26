@@ -5932,12 +5932,15 @@ function WebVRPolyfill() {
   this.devices = []; // For deprecated objects
   this.devicesPopulated = false;
   this.nativeWebVRAvailable = this.isWebVRAvailable();
+  this.nativeLegacyWebVRAvailable = this.isDeprecatedWebVRAvailable();
 
-  if (!this.nativeWebVRAvailable) {
-    this.enablePolyfill();
-  }
-  if (WebVRConfig.ENABLE_DEPRECATED_API && !this.isDeprecatedWebVRAvailable()) {
-    this.enableDeprecatedPolyfill();
+  if (!this.nativeLegacyWebVRAvailable) {
+    if (!this.nativeWebVRAvailable) {
+      this.enablePolyfill();
+    }
+    if (WebVRConfig.ENABLE_DEPRECATED_API) {
+      this.enableDeprecatedPolyfill();
+    }
   }
 }
 
@@ -6017,15 +6020,30 @@ WebVRPolyfill.prototype.getVRDevices = function() {
   var self = this;
   return new Promise(function(resolve, reject) {
     try {
-      if (!self.devicesPopulated && self.nativeWebVRAvailable) {
-        navigator.getVRDisplays(function(displays) {
-          for (var i = 0; i < displays.length; ++i) {
-            self.devices.push(new VRDisplayHMDDevice(displays[i]));
-            self.devices.push(new VRDisplayPositionSensorDevice(displays[i]));
-          }
-          self.devicesPopulated = true;
-          resolve(self.devices);
-        }, reject);
+      if (!self.devicesPopulated) {
+        if (self.nativeWebVRAvailable) {
+          navigator.getVRDisplays(function(displays) {
+            for (var i = 0; i < displays.length; ++i) {
+              self.devices.push(new VRDisplayHMDDevice(displays[i]));
+              self.devices.push(new VRDisplayPositionSensorDevice(displays[i]));
+            }
+            self.devicesPopulated = true;
+            resolve(self.devices);
+          }, reject);
+        } else if (self.nativeLegacyWebVRAvailable) {
+          (navigator.getVRDDevices || navigator.mozGetVRDevices)(function(devices) {
+            for (var i = 0; i < devices.length; ++i) {
+              if (devices[i] instanceof HMDVRDevice) {
+                self.devices.push(displays[i]);
+              }
+              if (devices[i] instanceof PositionSensorVRDevice) {
+                self.devices.push(devices[i]);
+              }
+            }
+            self.devicesPopulated = true;
+            resolve(self.devices);
+          }, reject);
+        }
       } else {
         self.populateDevices();
         resolve(self.devices);
