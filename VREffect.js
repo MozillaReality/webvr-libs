@@ -151,6 +151,15 @@ THREE.VREffect = function ( renderer, onError ) {
 
 		if ( vrHMD && isPresenting ) {
 
+			var autoUpdate = scene.autoUpdate;
+
+			if ( autoUpdate ) {
+
+				scene.updateMatrixWorld();
+				scene.autoUpdate = false;
+
+			}
+
 			var eyeParamsL = vrHMD.getEyeParameters( 'left' );
 			var eyeParamsR = vrHMD.getEyeParameters( 'right' );
 
@@ -208,6 +217,12 @@ THREE.VREffect = function ( renderer, onError ) {
 			renderer.render( scene, cameraR );
 
 			renderer.setScissorTest( false );
+
+			if ( autoUpdate ) {
+
+				scene.autoUpdate = true;
+
+			}
 
 			if ( isPresenting && !deprecatedAPI ) {
 
