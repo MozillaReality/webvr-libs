@@ -14,7 +14,7 @@ THREE.VRControls = function ( object, onError ) {
 		for ( var i = 0; i < devices.length; i ++ ) {
 
 			if ( ('VRDisplay' in window && devices[ i ] instanceof VRDisplay) ||
-				 devices[ i ] instanceof PositionSensorVRDevice ) {
+				 ('PositionSensorVRDevice' in window && devices[ i ] instanceof PositionSensorVRDevice) ) {
 
 				vrInputs.push( devices[ i ] );
 
@@ -24,7 +24,7 @@ THREE.VRControls = function ( object, onError ) {
 
 		if ( vrInputs.length === 0 ) {
 
-			if ( onError ) onError( 'VR inputs not available' );
+			if ( onError ) onError( 'VR inputs not available.' );
 
 		}
 
