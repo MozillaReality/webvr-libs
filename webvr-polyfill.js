@@ -17,7 +17,7 @@
 var Util = _dereq_('./util.js');
 var WakeLock = _dereq_('./wakelock.js');
 
-// Start at a higher number to reduce chance of conflict
+// Start at a higher number to reduce chance of conflict.
 var nextDisplayId = 1000;
 
 /**
@@ -48,6 +48,12 @@ function VRDisplay() {
   this.wakelock_ = new WakeLock();
 }
 
+VRDisplay.prototype.getPose = function() {
+  // TODO: Technically this should retain it's value for the duration of a frame
+  // but I doubt that's practical to do in javascript.
+  return this.getImmediatePose();
+};
+
 VRDisplay.prototype.requestAnimationFrame = function(callback) {
   return window.requestAnimationFrame(callback);
 };
@@ -76,7 +82,6 @@ VRDisplay.prototype.requestPresent = function(layer) {
         if (self.isPresenting) {
           if (screen.orientation && screen.orientation.lock)
             screen.orientation.lock('landscape-primary');
-          self.wakelock_.request();
           self.waitingForPresent_ = false;
           self.beginPresent_();
           resolve();
@@ -94,6 +99,7 @@ VRDisplay.prototype.requestPresent = function(layer) {
 
         self.removeFullscreenListeners_();
 
+        self.wakelock_.release();
         self.waitingForPresent_ = false;
         self.isPresenting = false;
 
@@ -104,6 +110,7 @@ VRDisplay.prototype.requestPresent = function(layer) {
           onFullscreenChange, onFullscreenError);
 
       if (Util.requestFullscreen(layer.source)) {
+        self.wakelock_.request();
         self.waitingForPresent_ = true;
       } else if (Util.isIOS()) {
         // *sigh* Just fake it.
@@ -124,13 +131,14 @@ VRDisplay.prototype.requestPresent = function(layer) {
 
 VRDisplay.prototype.exitPresent = function() {
   var wasPresenting = this.isPresenting;
+  var self = this;
   this.isPresenting = false;
   this.layer_ = null;
+  this.wakelock_.release();
 
   return new Promise(function(resolve, reject) {
     if (wasPresenting) {
       if (!Util.exitFullscreen() && Util.isIOS()) {
-        self.wakelock_.release();
         self.endPresent_();
       }
 
@@ -141,6 +149,9 @@ VRDisplay.prototype.exitPresent = function() {
   });
 };
 
+// This returns an array because future versions of the spec may accept multiple
+// layers in requestPresent, and it's easier to overload function parameters
+// than it is return types.
 VRDisplay.prototype.getLayers = function() {
   if (this.layer_) {
     return [this.layer_];
@@ -203,15 +214,20 @@ VRDisplay.prototype.removeFullscreenListeners_ = function() {
 };
 
 VRDisplay.prototype.beginPresent_ = function() {
-  // Override to add custom behavior when presentation begins
+  // Override to add custom behavior when presentation begins.
 };
 
 VRDisplay.prototype.endPresent_ = function() {
-  // Override to add custom behavior when presentation ends
+  // Override to add custom behavior when presentation ends.
 };
 
 VRDisplay.prototype.submitFrame = function(pose) {
-  // Override to add custom behavior for frame submission
+  // Override to add custom behavior for frame submission.
+};
+
+VRDisplay.prototype.getEyeParameters = function(whichEye) {
+  // Override to return accurate eye parameters is canPresent is true.
+  return null;
 };
 
 /*
@@ -265,9 +281,9 @@ module.exports.PositionSensorVRDevice = PositionSensorVRDevice;
 var Util = _dereq_('./util.js');
 var WGLUPreserveGLState = _dereq_('./deps/wglu-preserve-state.js');
 
-function lerp(a, b, t) {
-  return a + ((b - a) * t);
-}
+// Ideally should be 1.0 to match screen resolution. Many mobile devices are
+// fill-rate bound, though, so we may scale down for performance.
+var CANVAS_OVERSCALE = 1.0
 
 function linkProgram(gl, vertexSource, fragmentSource, attribLocationMap) {
   // No error checking for brevity.
@@ -339,8 +355,8 @@ function CardboardDistorter(gl) {
   this.gl = gl;
   this.ctxAttribs = gl.getContextAttributes();
 
-  this.meshWidth = 40;
-  this.meshHeight = 40;
+  this.meshWidth = 20;
+  this.meshHeight = 20;
 
   this.bufferWidth = gl.drawingBufferWidth;
   this.bufferHeight = gl.drawingBufferHeight;
@@ -359,7 +375,7 @@ function CardboardDistorter(gl) {
   this.uniforms = getProgramUniforms(gl, this.program);
 
   this.viewportOffsetScale = new Float32Array(8);
-  this.setViewports();
+  this.setTextureBounds();
 
   this.vertexBuffer = gl.createBuffer();
   this.indexBuffer = gl.createBuffer();
@@ -368,12 +384,15 @@ function CardboardDistorter(gl) {
   this.renderTarget = gl.createTexture();
   this.framebuffer = gl.createFramebuffer();
 
+  this.depthStencilBuffer = null;
   this.depthBuffer = null;
-  if (this.ctxAttribs.depth)
-    this.depthBuffer = gl.createRenderbuffer();
-
   this.stencilBuffer = null;
-  if (this.ctxAttribs.stencil)
+
+  if (this.ctxAttribs.depth && this.ctxAttribs.stencil)
+    this.depthStencilBuffer = gl.createRenderbuffer();
+  else if (this.ctxAttribs.depth)
+    this.depthBuffer = gl.createRenderbuffer();
+  else if (this.ctxAttribs.stencil)
     this.stencilBuffer = gl.createRenderbuffer();
 
   this.onResize();
@@ -395,6 +414,8 @@ CardboardDistorter.prototype.destroy = function() {
   gl.deleteBuffer(this.indexBuffer);
   gl.deleteTexture(this.renderTarget);
   gl.deleteFramebuffer(this.framebuffer);
+  if (this.depthStencilBuffer)
+    gl.deleteRenderbuffer(this.depthStencilBuffer);
   if (this.depthBuffer)
     gl.deleteRenderbuffer(this.depthBuffer);
   if (this.stencilBuffer)
@@ -410,12 +431,26 @@ CardboardDistorter.prototype.onResize = function() {
   var self = this;
 
   var glState = [
+    gl.SCISSOR_TEST,
+    gl.COLOR_WRITEMASK,
+    gl.VIEWPORT,
+    gl.COLOR_CLEAR_VALUE,
     gl.FRAMEBUFFER_BINDING,
     gl.RENDERBUFFER_BINDING,
     gl.TEXTURE_BINDING_2D, gl.TEXTURE0,
   ];
 
   WGLUPreserveGLState(gl, glState, function(gl) {
+    // Bind real backbuffer and clear it once. We don't need to clear it again
+    // after that because we're overwriting the same area every frame.
+    self.realBindFramebuffer.call(gl, gl.FRAMEBUFFER, null);
+
+    gl.disable(gl.SCISSOR_TEST);
+    gl.colorMask(true, true, true, true);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
     // Now bind and resize the fake backbuffer
     self.realBindFramebuffer.call(gl, gl.FRAMEBUFFER, self.framebuffer);
 
@@ -429,18 +464,24 @@ CardboardDistorter.prototype.onResize = function() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, self.renderTarget, 0);
 
-    if (self.ctxAttribs.depth) {
+    if (self.ctxAttribs.depth && self.ctxAttribs.stencil) {
+      gl.bindRenderbuffer(gl.RENDERBUFFER, self.depthStencilBuffer);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL,
+          self.bufferWidth, self.bufferHeight);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT,
+          gl.RENDERBUFFER, self.depthStencilBuffer);
+    } else if (self.ctxAttribs.depth) {
       gl.bindRenderbuffer(gl.RENDERBUFFER, self.depthBuffer);
       gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16,
           self.bufferWidth, self.bufferHeight);
-      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, self.depthBuffer);
-    }
-
-    if (self.ctxAttribs.stencil) {
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT,
+          gl.RENDERBUFFER, self.depthBuffer);
+    } else if (self.ctxAttribs.stencil) {
       gl.bindRenderbuffer(gl.RENDERBUFFER, self.stencilBuffer);
-      gl.renderbufferStorage(gl.RENDERBUFFER, gl.GL_STENCIL_INDEX8,
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.STENCIL_INDEX8,
           self.bufferWidth, self.bufferHeight);
-      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.STENCIL_ATTACHMENT, gl.RENDERBUFFER, self.stencilBuffer);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.STENCIL_ATTACHMENT,
+          gl.RENDERBUFFER, self.stencilBuffer);
     }
 
     if(!gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) {
@@ -458,8 +499,8 @@ CardboardDistorter.prototype.patch = function() {
   var self = this;
   var canvas = this.gl.canvas;
 
-  canvas.width = Math.max(screen.width, screen.height) * window.devicePixelRatio; //Util.getScreenWidth();
-  canvas.height = Math.min(screen.width, screen.height) * window.devicePixelRatio;
+  canvas.width = Util.getScreenWidth() * CANVAS_OVERSCALE;
+  canvas.height = Util.getScreenHeight() * CANVAS_OVERSCALE;
 
   Object.defineProperty(canvas, 'width', {
     configurable: true,
@@ -519,24 +560,24 @@ CardboardDistorter.prototype.unpatch = function() {
   this.isPatched = false;
 };
 
-CardboardDistorter.prototype.setViewports = function(viewportLeft, viewportRight) {
-  if (!viewportLeft)
-    viewportLeft = [0, 0, 0.5, 1];
+CardboardDistorter.prototype.setTextureBounds = function(leftBounds, rightBounds) {
+  if (!leftBounds)
+    leftBounds = [0, 0, 0.5, 1];
 
-  if (!viewportRight)
-    viewportRight = [0.5, 0, 0.5, 1];
+  if (!rightBounds)
+    rightBounds = [0.5, 0, 0.5, 1];
 
   // Left eye
-  this.viewportOffsetScale[0] = viewportLeft[0]; // X
-  this.viewportOffsetScale[1] = viewportLeft[1]; // Y
-  this.viewportOffsetScale[2] = viewportLeft[2]; // Width
-  this.viewportOffsetScale[3] = viewportLeft[3]; // Height
+  this.viewportOffsetScale[0] = leftBounds[0]; // X
+  this.viewportOffsetScale[1] = leftBounds[1]; // Y
+  this.viewportOffsetScale[2] = leftBounds[2]; // Width
+  this.viewportOffsetScale[3] = leftBounds[3]; // Height
 
   // Right eye
-  this.viewportOffsetScale[4] = viewportRight[0]; // X
-  this.viewportOffsetScale[5] = viewportRight[1]; // Y
-  this.viewportOffsetScale[6] = viewportRight[2]; // Width
-  this.viewportOffsetScale[7] = viewportRight[3]; // Height
+  this.viewportOffsetScale[4] = rightBounds[0]; // X
+  this.viewportOffsetScale[5] = rightBounds[1]; // Y
+  this.viewportOffsetScale[6] = rightBounds[2]; // Width
+  this.viewportOffsetScale[7] = rightBounds[3]; // Height
 };
 
 /**
@@ -554,7 +595,6 @@ CardboardDistorter.prototype.submitFrame = function() {
     gl.SCISSOR_TEST,
     gl.STENCIL_TEST,
     gl.COLOR_WRITEMASK,
-    gl.COLOR_CLEAR_VALUE,
     gl.VIEWPORT,
 
     gl.FRAMEBUFFER_BINDING,
@@ -563,6 +603,10 @@ CardboardDistorter.prototype.submitFrame = function() {
     gl.ELEMENT_ARRAY_BUFFER_BINDING,
     gl.TEXTURE_BINDING_2D, gl.TEXTURE0
   ];
+
+  if (self.ctxAttribs.alpha) {
+    glState.push(gl.COLOR_CLEAR_VALUE);
+  }
 
   WGLUPreserveGLState(gl, glState, function(gl) {
     // Bind the real default framebuffer
@@ -575,10 +619,14 @@ CardboardDistorter.prototype.submitFrame = function() {
     gl.disable(gl.SCISSOR_TEST);
     gl.disable(gl.STENCIL_TEST);
     gl.colorMask(true, true, true, true);
-    gl.clearColor(0, 0, 0, 1);
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    // If the backbuffer has an alpha channel clear every frame so the page
+    // doesn't show through.
+    if (self.ctxAttribs.alpha) {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
 
     // Bind distortion program and mesh
     gl.useProgram(self.program);
@@ -605,7 +653,6 @@ CardboardDistorter.prototype.submitFrame = function() {
 
     // If preserveDrawingBuffer == false clear the framebuffer
     if (!self.ctxAttribs.preserveDrawingBuffer) {
-      // TODO: Probably need to enforce color write and scissor state here.
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
   });
@@ -657,8 +704,8 @@ CardboardDistorter.prototype.computeMeshVertices_ = function(width, height, devi
         // the mesh.
         var s = u;
         var t = v;
-        var x = lerp(lensFrustum[0], lensFrustum[2], u);
-        var y = lerp(lensFrustum[3], lensFrustum[1], v);
+        var x = Util.lerp(lensFrustum[0], lensFrustum[2], u);
+        var y = Util.lerp(lensFrustum[3], lensFrustum[1], v);
         var d = Math.sqrt(x * x + y * y);
         var r = deviceInfo.distortion.distortInverse(d);
         var p = x * r / d;
@@ -710,8 +757,9 @@ CardboardDistorter.prototype.computeMeshIndices_ = function(width, height) {
       for (var i = 0; i < width; i++, vidx++) {
         if (i == 0 || j == 0)
           continue;
-        // Build a quad.  Lower right and upper left quadrants have quads with the triangle
-        // diagonal flipped to get the vignette to interpolate correctly.
+        // Build a quad.  Lower right and upper left quadrants have quads with
+        // the triangle diagonal flipped to get the vignette to interpolate
+        // correctly.
         if ((i <= halfwidth) == (j <= halfheight)) {
           // Quad diagonal lower left to upper right.
           indices[iidx++] = vidx;
@@ -763,6 +811,11 @@ var Eye = {
   RIGHT: 'right'
 };
 
+// Ideally should be higher than 1.0 to compensate for distortion. That's highly
+// detrimental on fill-rate bound devices, though, so we're actually
+// underreporting the ideal canvas size for the polyfill.
+var CANVAS_OVERSCALE = 1.0;
+
 /**
  * VRDisplay based on mobile device parameters and DeviceMotion APIs.
  */
@@ -785,12 +838,6 @@ function CardboardVRDisplay() {
 }
 CardboardVRDisplay.prototype = new VRDisplay();
 
-CardboardVRDisplay.prototype.getPose = function() {
-  // TODO: Technically this should retain it's value for the duration of a frame
-  // but I doubt that's practical to do in javascript.
-  return this.getImmediatePose();
-};
-
 CardboardVRDisplay.prototype.getImmediatePose = function() {
   return {
     position: this.poseSensor_.getPosition(),
@@ -803,7 +850,7 @@ CardboardVRDisplay.prototype.getImmediatePose = function() {
 };
 
 CardboardVRDisplay.prototype.resetPose = function() {
-  return this.poseSensor_.resetPose();
+  this.poseSensor_.resetPose();
 };
 
 CardboardVRDisplay.prototype.getEyeParameters = function(whichEye) {
@@ -821,16 +868,12 @@ CardboardVRDisplay.prototype.getEyeParameters = function(whichEye) {
     return null;
   }
 
-  // Ideally should be higher than 1.0 to compensate for distortion. May be
-  // detrimental on fill-rate bound devices, though.
-  var overscale = 1.0;
-
   return {
     fieldOfView: fieldOfView,
     offset: offset,
     // TODO: Should be able to provide better values than these.
-    renderWidth: this.deviceInfo_.device.width * 0.5 * overscale,
-    renderHeight: this.deviceInfo_.device.height * overscale,
+    renderWidth: this.deviceInfo_.device.width * 0.5 * CANVAS_OVERSCALE,
+    renderHeight: this.deviceInfo_.device.height * CANVAS_OVERSCALE,
   };
 };
 
@@ -860,8 +903,8 @@ CardboardVRDisplay.prototype.beginPresent_ = function() {
   this.distorter_ = new CardboardDistorter(gl);
   this.distorter_.updateDeviceInfo(this.deviceInfo_);
 
-  if (this.layer_.leftViewport || this.layer_.rightViewport)
-    this.distorter_.setViewports(this.layer_.leftViewport, this.layer_.rightViewport);
+  if (this.layer_.leftBounds || this.layer_.rightBounds)
+    this.distorter_.setTextureBounds(this.layer_.leftBounds, this.layer_.rightBounds);
 };
 
 CardboardVRDisplay.prototype.endPresent_ = function() {
@@ -2997,11 +3040,13 @@ FusionPoseSensor.prototype.getOrientation = function() {
 };
 
 FusionPoseSensor.prototype.resetPose = function() {
-  var euler = new THREE.Euler();
-  euler.setFromQuaternion(this.filter.getOrientation());
-  var yaw = euler.y;
-  console.log('resetPose with yaw: %f', yaw);
-  this.resetQ.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -yaw);
+  // Reduce to inverted yaw-only
+  this.resetQ.copy(this.filter.getOrientation());
+  this.resetQ.x = 0;
+  this.resetQ.y = 0;
+  this.resetQ.z *= -1;
+  this.resetQ.normalize();
+
   if (!WebVRConfig.TOUCH_PANNER_DISABLED) {
     this.touchPanner.resetSensor();
   }
@@ -3087,7 +3132,7 @@ new WebVRPolyfill();
 
 },{"./webvr-polyfill.js":20}],13:[function(_dereq_,module,exports){
 /*
- * Copyright 2015 Google Inc. All Rights Reserved.
+ * Copyright 2016 Google Inc. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -3100,7 +3145,8 @@ new WebVRPolyfill();
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-var PositionSensorVRDevice = _dereq_('./base.js').PositionSensorVRDevice;
+
+var VRDisplay = _dereq_('./base.js').VRDisplay;
 var THREE = _dereq_('./three-math.js');
 var Util = _dereq_('./util.js');
 
@@ -3113,13 +3159,13 @@ var MOUSE_SPEED_X = 0.5;
 var MOUSE_SPEED_Y = 0.3;
 
 /**
- * A virtual position sensor, implemented using keyboard and
- * mouse APIs. This is designed as for desktops/laptops where no Device*
- * events work.
+ * VRDisplay based on mouse and keyboard input. Designed for desktops/laptops
+ * where orientation events aren't supported. Cannot present.
  */
-function MouseKeyboardPositionSensorVRDevice() {
-  this.deviceId = 'webvr-polyfill:mouse-keyboard';
-  this.deviceName = 'VR Position Device (webvr-polyfill:mouse-keyboard)';
+function MouseKeyboardVRDisplay() {
+  this.displayName = 'Mouse and Keyboard VRDisplay (webvr-polyfill)';
+
+  this.capabilities.hasOrientation = true;
 
   // Attach to mouse and keyboard events.
   window.addEventListener('keydown', this.onKeyDown_.bind(this));
@@ -3127,79 +3173,87 @@ function MouseKeyboardPositionSensorVRDevice() {
   window.addEventListener('mousedown', this.onMouseDown_.bind(this));
   window.addEventListener('mouseup', this.onMouseUp_.bind(this));
 
-  this.phi = 0;
-  this.theta = 0;
+  // "Private" members.
+  this.phi_ = 0;
+  this.theta_ = 0;
 
   // Variables for keyboard-based rotation animation.
-  this.targetAngle = null;
+  this.targetAngle_ = null;
+  this.angleAnimation_ = null;
 
   // State variables for calculations.
-  this.euler = new THREE.Euler();
-  this.orientation = new THREE.Quaternion();
+  this.euler_ = new THREE.Euler();
+  this.orientation_ = new THREE.Quaternion();
 
   // Variables for mouse-based rotation.
-  this.rotateStart = new THREE.Vector2();
-  this.rotateEnd = new THREE.Vector2();
-  this.rotateDelta = new THREE.Vector2();
-}
-MouseKeyboardPositionSensorVRDevice.prototype = new PositionSensorVRDevice();
+  this.rotateStart_ = new THREE.Vector2();
+  this.rotateEnd_ = new THREE.Vector2();
+  this.rotateDelta_ = new THREE.Vector2();
+  this.isDragging_ = false;
 
-/**
- * Returns {orientation: {x,y,z,w}, position: null}.
- * Position is not supported for parity with other PositionSensors.
- */
-MouseKeyboardPositionSensorVRDevice.prototype.getState = function() {
-  this.euler.set(this.phi, this.theta, 0, 'YXZ');
-  this.orientation.setFromEuler(this.euler);
+  this.orientationOut_ = new Float32Array(4);
+}
+MouseKeyboardVRDisplay.prototype = new VRDisplay();
+
+MouseKeyboardVRDisplay.prototype.getImmediatePose = function() {
+  this.euler_.set(this.phi_, this.theta_, 0, 'YXZ');
+  this.orientation_.setFromEuler(this.euler_);
+
+  this.orientationOut_[0] = this.orientation_.x;
+  this.orientationOut_[1] = this.orientation_.y;
+  this.orientationOut_[2] = this.orientation_.z;
+  this.orientationOut_[3] = this.orientation_.w;
 
   return {
-    hasOrientation: true,
-    orientation: this.orientation,
-    hasPosition: false,
-    position: null
-  }
+    position: null,
+    orientation: this.orientationOut_,
+    linearVelocity: null,
+    linearAcceleration: null,
+    angularVelocity: null,
+    angularAcceleration: null
+  };
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.onKeyDown_ = function(e) {
+MouseKeyboardVRDisplay.prototype.onKeyDown_ = function(e) {
   // Track WASD and arrow keys.
   if (e.keyCode == 38) { // Up key.
-    this.animatePhi_(this.phi + KEY_SPEED);
+    this.animatePhi_(this.phi_ + KEY_SPEED);
   } else if (e.keyCode == 39) { // Right key.
-    this.animateTheta_(this.theta - KEY_SPEED);
+    this.animateTheta_(this.theta_ - KEY_SPEED);
   } else if (e.keyCode == 40) { // Down key.
-    this.animatePhi_(this.phi - KEY_SPEED);
+    this.animatePhi_(this.phi_ - KEY_SPEED);
   } else if (e.keyCode == 37) { // Left key.
-    this.animateTheta_(this.theta + KEY_SPEED);
+    this.animateTheta_(this.theta_ + KEY_SPEED);
   }
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.animateTheta_ = function(targetAngle) {
-  this.animateKeyTransitions_('theta', targetAngle);
+MouseKeyboardVRDisplay.prototype.animateTheta_ = function(targetAngle) {
+  this.animateKeyTransitions_('theta_', targetAngle);
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.animatePhi_ = function(targetAngle) {
+MouseKeyboardVRDisplay.prototype.animatePhi_ = function(targetAngle) {
   // Prevent looking too far up or down.
   targetAngle = Util.clamp(targetAngle, -Math.PI/2, Math.PI/2);
-  this.animateKeyTransitions_('phi', targetAngle);
+  this.animateKeyTransitions_('phi_', targetAngle);
 };
 
 /**
  * Start an animation to transition an angle from one value to another.
  */
-MouseKeyboardPositionSensorVRDevice.prototype.animateKeyTransitions_ = function(angleName, targetAngle) {
+MouseKeyboardVRDisplay.prototype.animateKeyTransitions_ = function(angleName, targetAngle) {
   // If an animation is currently running, cancel it.
-  if (this.angleAnimation) {
-    clearInterval(this.angleAnimation);
+  if (this.angleAnimation_) {
+    clearInterval(this.angleAnimation_);
   }
   var startAngle = this[angleName];
   var startTime = new Date();
   // Set up an interval timer to perform the animation.
-  this.angleAnimation = setInterval(function() {
+  this.angleAnimation_ = setInterval(function() {
     // Once we're finished the animation, we're done.
     var elapsed = new Date() - startTime;
     if (elapsed >= KEY_ANIMATION_DURATION) {
       this[angleName] = targetAngle;
-      clearInterval(this.angleAnimation);
+      clearInterval(this.angleAnimation_);
       return;
     }
     // Linearly interpolate the angle some amount.
@@ -3208,52 +3262,52 @@ MouseKeyboardPositionSensorVRDevice.prototype.animateKeyTransitions_ = function(
   }.bind(this), 1000/60);
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.onMouseDown_ = function(e) {
-  this.rotateStart.set(e.clientX, e.clientY);
-  this.isDragging = true;
+MouseKeyboardVRDisplay.prototype.onMouseDown_ = function(e) {
+  this.rotateStart_.set(e.clientX, e.clientY);
+  this.isDragging_ = true;
 };
 
 // Very similar to https://gist.github.com/mrflix/8351020
-MouseKeyboardPositionSensorVRDevice.prototype.onMouseMove_ = function(e) {
-  if (!this.isDragging && !this.isPointerLocked_()) {
+MouseKeyboardVRDisplay.prototype.onMouseMove_ = function(e) {
+  if (!this.isDragging_ && !this.isPointerLocked_()) {
     return;
   }
   // Support pointer lock API.
   if (this.isPointerLocked_()) {
     var movementX = e.movementX || e.mozMovementX || 0;
     var movementY = e.movementY || e.mozMovementY || 0;
-    this.rotateEnd.set(this.rotateStart.x - movementX, this.rotateStart.y - movementY);
+    this.rotateEnd_.set(this.rotateStart_.x - movementX, this.rotateStart_.y - movementY);
   } else {
-    this.rotateEnd.set(e.clientX, e.clientY);
+    this.rotateEnd_.set(e.clientX, e.clientY);
   }
   // Calculate how much we moved in mouse space.
-  this.rotateDelta.subVectors(this.rotateEnd, this.rotateStart);
-  this.rotateStart.copy(this.rotateEnd);
+  this.rotateDelta_.subVectors(this.rotateEnd_, this.rotateStart_);
+  this.rotateStart_.copy(this.rotateEnd_);
 
   // Keep track of the cumulative euler angles.
-  var element = document.body;
-  this.phi += 2 * Math.PI * this.rotateDelta.y / element.clientHeight * MOUSE_SPEED_Y;
-  this.theta += 2 * Math.PI * this.rotateDelta.x / element.clientWidth * MOUSE_SPEED_X;
+  this.phi_ += 2 * Math.PI * this.rotateDelta_.y / screen.height * MOUSE_SPEED_Y;
+  this.theta_ += 2 * Math.PI * this.rotateDelta_.x / screen.width * MOUSE_SPEED_X;
 
   // Prevent looking too far up or down.
-  this.phi = Util.clamp(this.phi, -Math.PI/2, Math.PI/2);
+  this.phi_ = Util.clamp(this.phi_, -Math.PI/2, Math.PI/2);
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.onMouseUp_ = function(e) {
-  this.isDragging = false;
+MouseKeyboardVRDisplay.prototype.onMouseUp_ = function(e) {
+  this.isDragging_ = false;
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.isPointerLocked_ = function() {
+MouseKeyboardVRDisplay.prototype.isPointerLocked_ = function() {
   var el = document.pointerLockElement || document.mozPointerLockElement ||
       document.webkitPointerLockElement;
   return el !== undefined;
 };
 
-MouseKeyboardPositionSensorVRDevice.prototype.resetSensor = function() {
-  console.error('Not implemented yet.');
+MouseKeyboardVRDisplay.prototype.resetPose = function() {
+  this.phi_ = 0;
+  this.theta_ = 0;
 };
 
-module.exports = MouseKeyboardPositionSensorVRDevice;
+module.exports = MouseKeyboardVRDisplay;
 
 },{"./base.js":1,"./three-math.js":16,"./util.js":18}],14:[function(_dereq_,module,exports){
 /*
@@ -5755,6 +5809,10 @@ Util.clamp = function(value, min, max) {
   return Math.min(Math.max(min, value), max);
 };
 
+Util.lerp = function(a, b, t) {
+  return a + ((b - a) * t);
+}
+
 Util.isIOS = function() {
   return /iPad|iPhone|iPod/.test(navigator.platform);
 };
@@ -5918,7 +5976,7 @@ module.exports = getWakeLock();
  */
 
 var CardboardVRDisplay = _dereq_('./cardboard-vr-display.js');
-var MouseKeyboardPositionSensorVRDevice = _dereq_('./mouse-keyboard-position-sensor-vr-device.js');
+var MouseKeyboardVRDisplay = _dereq_('./mouse-keyboard-vr-display.js');
 // Uncomment to add positional tracking via webcam.
 //var WebcamPositionSensorVRDevice = require('./webcam-position-sensor-vr-device.js');
 var VRDisplay = _dereq_('./base.js').VRDisplay;
@@ -5956,10 +6014,13 @@ WebVRPolyfill.prototype.populateDevices = function() {
   if (this.devicesPopulated) {
     return;
   }
-  var vrDisplay = null;
+
   // Initialize our virtual VR devices.
+  var vrDisplay = null;
+
+  // Add a Cardboard VRDisplay on compatible mobile devices
   if (this.isCardboardCompatible()) {
-    var vrDisplay = new CardboardVRDisplay();
+    vrDisplay = new CardboardVRDisplay();
     this.displays.push(vrDisplay);
 
     // For backwards compatibility
@@ -5969,19 +6030,23 @@ WebVRPolyfill.prototype.populateDevices = function() {
     }
   }
 
-  // Polyfill using the right position sensor.
-  // TODO: For the moment this is only available via the deprecated APIs.
-  // Should refactor them to be exposed as VRDisplays that are wrapped as
-  // VRDevices.
-  if (WebVRConfig.ENABLE_DEPRECATED_API && !this.isMobile()) {
-    if (!WebVRConfig.MOUSE_KEYBOARD_CONTROLS_DISABLED) {
-      positionDevice = new MouseKeyboardPositionSensorVRDevice();
-      this.devices.push(positionDevice);
+  // Add a Mouse and Keyboard driven VRDisplay for desktops/laptops
+  if (!this.isMobile() && !WebVRConfig.MOUSE_KEYBOARD_CONTROLS_DISABLED) {
+    vrDisplay = new MouseKeyboardVRDisplay();
+    this.displays.push(vrDisplay);
+
+    // For backwards compatibility
+    if (WebVRConfig.ENABLE_DEPRECATED_API) {
+      this.devices.push(new VRDisplayHMDDevice(vrDisplay));
+      this.devices.push(new VRDisplayPositionSensorDevice(vrDisplay));
     }
-    // Uncomment to add positional tracking via webcam.
-    //positionDevice = new WebcamPositionSensorVRDevice();
-    //this.devices.push(positionDevice);
   }
+
+  // Uncomment to add positional tracking via webcam.
+  //if (!this.isMobile() && WebVRConfig.ENABLE_DEPRECATED_API) {
+  //  positionDevice = new WebcamPositionSensorVRDevice();
+  //  this.devices.push(positionDevice);
+  //}
 
   this.devicesPopulated = true;
 };
@@ -6022,7 +6087,7 @@ WebVRPolyfill.prototype.getVRDevices = function() {
     try {
       if (!self.devicesPopulated) {
         if (self.nativeWebVRAvailable) {
-          navigator.getVRDisplays(function(displays) {
+          return navigator.getVRDisplays(function(displays) {
             for (var i = 0; i < displays.length; ++i) {
               self.devices.push(new VRDisplayHMDDevice(displays[i]));
               self.devices.push(new VRDisplayPositionSensorDevice(displays[i]));
@@ -6030,8 +6095,10 @@ WebVRPolyfill.prototype.getVRDevices = function() {
             self.devicesPopulated = true;
             resolve(self.devices);
           }, reject);
-        } else if (self.nativeLegacyWebVRAvailable) {
-          (navigator.getVRDDevices || navigator.mozGetVRDevices)(function(devices) {
+        }
+
+        if (self.nativeLegacyWebVRAvailable) {
+          return (navigator.getVRDDevices || navigator.mozGetVRDevices)(function(devices) {
             for (var i = 0; i < devices.length; ++i) {
               if (devices[i] instanceof HMDVRDevice) {
                 self.devices.push(displays[i]);
@@ -6044,10 +6111,10 @@ WebVRPolyfill.prototype.getVRDevices = function() {
             resolve(self.devices);
           }, reject);
         }
-      } else {
-        self.populateDevices();
-        resolve(self.devices);
       }
+
+      self.populateDevices();
+      resolve(self.devices);
     } catch (e) {
       reject(e);
     }
@@ -6070,4 +6137,4 @@ WebVRPolyfill.prototype.isCardboardCompatible = function() {
 
 module.exports = WebVRPolyfill;
 
-},{"./base.js":1,"./cardboard-vr-display.js":3,"./display-wrappers.js":7,"./mouse-keyboard-position-sensor-vr-device.js":13}]},{},[12]);
+},{"./base.js":1,"./cardboard-vr-display.js":3,"./display-wrappers.js":7,"./mouse-keyboard-vr-display.js":13}]},{},[12]);
