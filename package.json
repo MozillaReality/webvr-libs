@@ -22,6 +22,7 @@
   },
   "scripts": {
     "sync": "node ./scripts/update",
-    "update": "npm run sync"
+    "update": "npm run sync",
+    "release": "npm version patch && npm publish && git push --tags"
   }
 }
