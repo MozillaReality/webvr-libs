@@ -76,7 +76,7 @@ THREE.VREffect = function ( renderer, onError ) {
 
 	document.addEventListener( fullscreenchange, function () {
 
-		if ( deprecatedAPI ) {
+		if ( vrHMD && deprecatedAPI ) {
 
 			isPresenting = document.mozFullScreenElement || document.webkitFullscreenElement;
 
@@ -86,57 +86,74 @@ THREE.VREffect = function ( renderer, onError ) {
 
 	window.addEventListener( 'vrdisplaypresentchange', function () {
 
-		if (vrHMD) {
-
-			isPresenting = vrHMD.isPresenting;
-
-		}
+		isPresenting = vrHMD && vrHMD.isPresenting;
 
 	}, false );
 
 	this.setFullScreen = function ( boolean ) {
 
-		if ( vrHMD === undefined ) return;
-		if ( isPresenting === boolean ) return;
+		return new Promise( function ( resolve, reject ) {
 
-		if ( !deprecatedAPI ) {
+			if ( vrHMD === undefined ) {
 
-			if ( boolean ) {
+				reject( new Error( 'No VR hardware found.' ) );
+				return;
 
-				vrHMD.requestPresent( { source: canvas } );
+			}
+			if ( isPresenting === boolean ) {
 
-			} else {
-
-				vrHMD.exitPresent();
+				resolve();
+				return;
 
 			}
 
-		} else {
+			if ( !deprecatedAPI ) {
 
-			if ( canvas.mozRequestFullScreen ) {
+				if ( boolean ) {
 
-				canvas.mozRequestFullScreen( { vrDisplay: vrHMD } );
+					resolve( vrHMD.requestPresent( { source: canvas } ) );
 
-			} else if ( canvas.webkitRequestFullscreen ) {
+				} else {
 
-				canvas.webkitRequestFullscreen( { vrDisplay: vrHMD } );
+					resolve( vrHMD.exitPresent() );
+
+				}
 
 			} else {
 
-				console.error( 'No compatible requestFullscreen method found.' );
+				if ( canvas.mozRequestFullScreen ) {
+
+					canvas.mozRequestFullScreen( { vrDisplay: vrHMD } );
+					resolve();
+
+				} else if ( canvas.webkitRequestFullscreen ) {
+
+					canvas.webkitRequestFullscreen( { vrDisplay: vrHMD } );
+					resolve();
+
+				} else {
+
+					console.error( 'No compatible requestFullscreen method found.' );
+					reject( new Error( 'No compatible requestFullscreen method found.' ) );
+
+				}
 
 			}
 
-		}
+		});
 
 	};
 
 	this.requestPresent = function () {
-		this.setFullScreen( true );
+
+		return this.setFullScreen( true );
+
 	};
 
 	this.exitPresent = function () {
-		this.setFullScreen( false );
+
+		return this.setFullScreen( false );
+
 	};
 
 	// render
@@ -165,15 +182,15 @@ THREE.VREffect = function ( renderer, onError ) {
 
 			if ( !deprecatedAPI ) {
 
-				eyeTranslationL.fromArray(eyeParamsL.offset);
-				eyeTranslationR.fromArray(eyeParamsR.offset);
+				eyeTranslationL.fromArray( eyeParamsL.offset );
+				eyeTranslationR.fromArray( eyeParamsR.offset );
 				eyeFOVL = eyeParamsL.fieldOfView;
 				eyeFOVR = eyeParamsR.fieldOfView;
 
 			} else {
 
-				eyeTranslationL.copy(eyeParamsL.eyeTranslation);
-				eyeTranslationR.copy(eyeParamsR.eyeTranslation);
+				eyeTranslationL.copy( eyeParamsL.eyeTranslation );
+				eyeTranslationR.copy( eyeParamsR.eyeTranslation );
 				eyeFOVL = eyeParamsL.recommendedFieldOfView;
 				eyeFOVR = eyeParamsR.recommendedFieldOfView;
 
@@ -224,7 +241,7 @@ THREE.VREffect = function ( renderer, onError ) {
 
 			}
 
-			if ( isPresenting && !deprecatedAPI ) {
+			if ( !deprecatedAPI ) {
 
 				vrHMD.submitFrame();
 
