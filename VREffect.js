@@ -100,9 +100,9 @@ THREE.VREffect = function ( renderer, onError ) {
 
 	document.addEventListener( fullscreenchange, function (e) {
 
-		if ( fullscreenchange && deprecatedAPI ) {
+		if ( vrHMD && deprecatedAPI ) {
 
-			isPresenting = document[fullscreenElement] === canvas;
+			isPresenting = !!document[fullscreenElement];
 
 		}
 
