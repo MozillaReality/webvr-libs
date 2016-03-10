@@ -12,7 +12,7 @@
 THREE.VREffect = function ( renderer, onError ) {
 
 	var vrHMD;
-	var deprecatedAPI = 'getVRDevices' in navigator;
+	var deprecatedAPI = true;
 	var eyeTranslationL = new THREE.Vector3();
 	var eyeTranslationR = new THREE.Vector3();
 	var renderRectL, renderRectR;
@@ -108,7 +108,7 @@ THREE.VREffect = function ( renderer, onError ) {
 
 	}, false );
 
-	if ( !fullscreenchange ) {
+	if ( fullscreenchange === undefined ) {
 
 		// Assume we are presenting for browsers that don't yet support the Fullscreen API (e.g., Safari/IE10).
 		isPresenting = true;
@@ -117,6 +117,7 @@ THREE.VREffect = function ( renderer, onError ) {
 
 	window.addEventListener( 'vrdisplaypresentchange', function () {
 
+		deprecatedAPI = false; // Until latest builds support `vrdisplayconnected` and/or webvr-polyfill adds a property to identify polyfilled the `navigator.getVRDisplays`.
 		isPresenting = vrHMD && vrHMD.isPresenting;
 
 	}, false );
