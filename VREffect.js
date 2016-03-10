@@ -12,7 +12,7 @@
 THREE.VREffect = function ( renderer, onError ) {
 
 	var vrHMD;
-	var deprecatedAPI = true;
+	var deprecatedAPI = 'getVRDevices' in navigator; // XXX: This assumes webvr-polyfill hasn't polyfilled the `navigator.getVRDisplays`.
 	var eyeTranslationL = new THREE.Vector3();
 	var eyeTranslationR = new THREE.Vector3();
 	var renderRectL, renderRectR;
@@ -117,7 +117,6 @@ THREE.VREffect = function ( renderer, onError ) {
 
 	window.addEventListener( 'vrdisplaypresentchange', function () {
 
-		deprecatedAPI = false; // Until latest builds support `vrdisplayconnected` and/or webvr-polyfill adds a property to identify polyfilled the `navigator.getVRDisplays`.
 		isPresenting = vrHMD && vrHMD.isPresenting;
 
 	}, false );
