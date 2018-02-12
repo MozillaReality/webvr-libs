@@ -8,9 +8,9 @@ WebVR libaries.
 Just drop these scripts into your page:
 
 ```html
-    <script src="https://mozvr.github.io/webvr-libs/webvr-polyfill.js"></script>
-    <script src="https://mozvr.github.io/webvr-libs/VRControls.js"></script>
-    <script src="https://mozvr.github.io/webvr-libs/VREffect.js"></script>
+    <script src="https://mozvr.com/webvr-libs/webvr-polyfill.js"></script>
+    <script src="https://mozvr.com/webvr-libs/VRControls.js"></script>
+    <script src="https://mozvr.com/webvr-libs/VREffect.js"></script>
 ```
 
 
